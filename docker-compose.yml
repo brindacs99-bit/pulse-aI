@@ -1,10 +1,19 @@
+# ===============================
+# Pulse.ai – Server Monitoring & Forecasting System
+# ===============================
+name: pulse-ai
+
 services:
+
+  # -------------------------------
+  # Node Exporter (System Metrics)
+  # -------------------------------
   node-exporter:
     image: prom/node-exporter:latest
-    container_name: node-exporter
+    container_name: pulse-node-exporter
     restart: unless-stopped
     network_mode: "host"
-    pid: "host" 
+    pid: "host"
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
@@ -12,11 +21,15 @@ services:
     command:
       - --path.procfs=/host/proc
       - --path.sysfs=/host/sys
-      - --collector.filesystem.ignored-mount-points="^/(sys|proc|dev|host|etc)($|/)"
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($|/)
 
+  # -------------------------------
+  # Prometheus (Metric Scraper)
+  # -------------------------------
   prometheus:
     image: prom/prometheus:latest
-    container_name: prometheus
+    container_name: pulse-prometheus
     restart: unless-stopped
     ports:
       - "9090:9090"
@@ -24,45 +37,58 @@ services:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.enable-lifecycle'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
 
+  # -------------------------------
+  # Grafana (Visualization)
+  # -------------------------------
   grafana:
     image: grafana/grafana:latest
-    container_name: grafana
+    container_name: pulse-grafana
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_AUTH_ANONYMOUS_ENABLED=false
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: Pulse@123
+      GF_USERS_ALLOW_SIGN_UP: "false"
+
+      # 🔑 REQUIRED for embedding Grafana in Streamlit
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+
+      GF_APPLICATION_TITLE: "Pulse.ai Monitoring"
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
 
+  # -------------------------------
+  # InfluxDB (Time-Series Database)
+  # -------------------------------
   influxdb:
     image: influxdb:2.7
-    container_name: influxdb
+    container_name: pulse-influxdb
     restart: unless-stopped
     ports:
       - "8086:8086"
     environment:
-      - DOCKER_INFLUXDB_INIT_MODE=setup
-      - DOCKER_INFLUXDB_INIT_USERNAME=${DOCKER_INFLUXDB_INIT_USERNAME}
-      - DOCKER_INFLUXDB_INIT_PASSWORD=${DOCKER_INFLUXDB_INIT_PASSWORD}
-      - DOCKER_INFLUXDB_INIT_ORG=${DOCKER_INFLUXDB_INIT_ORG}
-      - DOCKER_INFLUXDB_INIT_BUCKET=${DOCKER_INFLUXDB_INIT_BUCKET}
-      - DOCKER_INFLUXDB_INIT_RETENTION=${DOCKER_INFLUXDB_INIT_RETENTION}
-      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${DOCKER_INFLUXDB_INIT_ADMIN_TOKEN}
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: PulseInflux@123
+      DOCKER_INFLUXDB_INIT_ORG: pulse-ai
+      DOCKER_INFLUXDB_INIT_BUCKET: metrics
+      DOCKER_INFLUXDB_INIT_RETENTION: 7d
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: pulse-ai-secure-token
     volumes:
       - influxdb_data:/var/lib/influxdb2
 
+  # -------------------------------
+  # Telegraf (Metric Collector)
+  # -------------------------------
   telegraf:
     image: telegraf:latest
-    container_name: telegraf
+    container_name: pulse-telegraf
     restart: unless-stopped
     depends_on:
       - influxdb
@@ -73,20 +99,18 @@ services:
       - /sys:/host/sys:ro
       - /:/rootfs:ro
 
+  # -------------------------------
+  # MLflow (Experiment Tracking)
+  # -------------------------------
   mlflow:
     image: ghcr.io/mlflow/mlflow
-    container_name: mlflow
+    container_name: pulse-mlflow
     restart: unless-stopped
     ports:
-      - "5000:5000"
-    environment:
-      - MLFLOW_TRACKING_URI=http://0.0.0.0:5000
-    # Run as current user to avoid permission issues
-    user: "${UID:-1000}:${GID:-1000}"
+      - "5050:5000"
     volumes:
       - ./mlruns:/mlruns
       - ./artifacts:/artifacts
-      - ./mlflow_db:/mlflow_db
     command: >
       mlflow server
       --backend-store-uri file:///mlruns
@@ -94,11 +118,14 @@ services:
       --host 0.0.0.0
       --port 5000
 
+  # -------------------------------
+  # Streamlit (Main Website)
+  # -------------------------------
   streamlit:
     build:
       context: .
       dockerfile: Dockerfile.streamlit
-    container_name: streamlit
+    container_name: pulse-streamlit
     restart: unless-stopped
     ports:
       - "8501:8501"
@@ -107,13 +134,16 @@ services:
       - ./artifacts:/app/artifacts
       - ./app.py:/app/app.py
     environment:
-      - PYTHONPATH=/app
+      PYTHONPATH: /app
     depends_on:
       - mlflow
+      - grafana
     command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
-      
+
+# -------------------------------
+# Volumes
+# -------------------------------
 volumes:
   prometheus_data:
   grafana_data:
   influxdb_data:
-  mlflow_artifacts:
